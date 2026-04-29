@@ -123,12 +123,6 @@ class MainWindow(QMainWindow):
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(QApplication.quit)
 
-        file_menu = self.menuBar().addMenu("File")
-        file_menu.addAction(open_fixed)
-        file_menu.addAction(open_moving)
-        file_menu.addSeparator()
-        file_menu.addAction(exit_action)
-
     def _build_ui(self) -> None:
         root = QWidget()
         root_layout = QVBoxLayout(root)
@@ -234,8 +228,8 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.export_mp4_button, 2, 2)
         controls_layout.addWidget(self.auto_adjust_button, 3, 2)
 
-        self.first_preview = ImagePreview("Cropped first image")
-        self.second_preview = ImagePreview("Cropped registered second image")
+        self.first_preview = ImagePreview("First image")
+        self.second_preview = ImagePreview("Second image")
         self.wiggle_preview = ImagePreview("Wiggle preview")
 
         preview_layout = QHBoxLayout()
