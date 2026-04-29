@@ -87,17 +87,7 @@ RANSAC, warps the second image into the first image's coordinate space, and
 crops both frames to the shared valid overlap. If feature matching is not
 available, it falls back to phase-correlation translation. Black regions
 connected to the image border are masked out before feature detection and are
-excluded from the final overlap crop. Before registration, the second image is
-temporarily brightness/contrast normalized toward the first image using
-non-border content. After overlap detection, those same brightness and
-contrast values are applied through the second image sliders, so the preview
-and export start from the correction used for registration.
-
-After registration, the brightness and contrast sliders adjust each cropped
-frame independently. This helps when stereo images were captured with slightly
-different exposure, lighting, or scan contrast. The Auto Adjust button uses
-the cropped overlap to set the second frame's brightness and contrast toward
-the first frame.
+excluded from the final overlap crop.
 
 Smooth mode uses feature-based dense optical-flow interpolation between the
 registered crops. It generates intermediate frames in both directions so the
