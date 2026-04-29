@@ -3,7 +3,9 @@
 Open Stereoscope is a Windows desktop app for creating geological wiggle/smooth GIFs
 from two overlapping stereo images.
 
+
 <img width="1171" height="782" alt="stereo-example" src="https://github.com/user-attachments/assets/b4717c3b-d8ee-4a3a-b79d-b8a861a6ed4b" />
+
 
 The app lets a user:
 
@@ -19,6 +21,11 @@ The app lets a user:
 - auto-adjust the second cropped frame to match the first frame's brightness
   and contrast;
 - export a looping GIF, with optional MP4 export.
+  
+
+  <img width="524" height="336" alt="test-scene" src="https://github.com/user-attachments/assets/7880428c-34d5-434f-bc54-1188d45b028b" />
+
+
 
 ## Tech stack
 
