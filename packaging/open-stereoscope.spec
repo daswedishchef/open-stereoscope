@@ -3,7 +3,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 
 block_cipher = None
@@ -16,17 +16,23 @@ hiddenimports = (
     + collect_submodules("imageio_ffmpeg")
     + collect_submodules("PIL")
 )
+datas = (
+    [
+        (
+            str(src_root / "open_stereoscope" / "assets" / "open-stereo.png"),
+            "open_stereoscope/assets",
+        )
+    ]
+    + copy_metadata("imageio")
+    + copy_metadata("imageio-ffmpeg")
+    + collect_data_files("imageio_ffmpeg")
+)
 
 a = Analysis(
     [str(project_root / "scripts" / "run_open_stereoscope.py")],
     pathex=[str(src_root)],
     binaries=[],
-    datas=[
-        (
-            str(src_root / "open_stereoscope" / "assets" / "open-stereo.png"),
-            "open_stereoscope/assets",
-        )
-    ],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
