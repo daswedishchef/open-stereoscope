@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-stereoscope"
+version = "0.1.0"
+description = "Windows desktop tool for building geological wiggle GIFs from stereo image pairs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "PySide6>=6.6",
+  "opencv-python>=4.8",
+  "numpy>=1.24",
+  "imageio>=2.33",
+  "imageio-ffmpeg>=0.4.9",
+  "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pyinstaller>=6.0",
+]
+
+[project.scripts]
+open-stereoscope = "open_stereoscope.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+open_stereoscope = ["assets/*"]
