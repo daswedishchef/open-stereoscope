@@ -48,6 +48,15 @@ $env:PYTHONPATH = "$PWD\src"
 python -m open_stereoscope
 ```
 
+## Download for Windows
+
+Download the latest `open-stereoscope-*-windows.zip` file from the GitHub
+Releases page, unzip it, and run the exe
+
+Windows may show a SmartScreen warning until the app is code-signed or has
+enough download reputation. Choose "More info" and "Run anyway" if you trust
+the release source.
+
 ## Build a Windows executable
 
 ```powershell
@@ -59,6 +68,7 @@ The executable is written to:
 ```text
 dist\open-stereoscope\open-stereoscope.exe
 ```
+
 
 ## Registration approach
 
