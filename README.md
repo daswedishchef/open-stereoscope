@@ -24,7 +24,7 @@ The app lets a user:
   
 
   <img width="524" height="336" alt="test-scene" src="https://github.com/user-attachments/assets/7880428c-34d5-434f-bc54-1188d45b028b" />
-
+Find aerial photos here: [https://mil.library.ucsb.edu/ap_indexes/FrameFinder/]([url](https://mil.library.ucsb.edu/ap_indexes/FrameFinder/))
 
 
 ## Tech stack
