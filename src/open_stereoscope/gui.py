@@ -4,7 +4,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSlider,
     QStatusBar,
@@ -44,6 +45,51 @@ APP_ICON_RESOURCE = "assets/open-stereo.png"
 
 def app_icon() -> QIcon:
     return QIcon(str(files("open_stereoscope").joinpath(APP_ICON_RESOURCE)))
+
+
+class ExportWorker(QObject):
+    progress = Signal(int, str)
+    finished = Signal(str, str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        export_kind: str,
+        output_path: str,
+        result: RegistrationResult,
+        delay_ms: int,
+        fixed_adjustments: ImageAdjustments,
+        moving_adjustments: ImageAdjustments,
+        animation_mode: str,
+        scale_percent: int,
+    ) -> None:
+        super().__init__()
+        self.export_kind = export_kind
+        self.output_path = output_path
+        self.result = result
+        self.delay_ms = delay_ms
+        self.fixed_adjustments = fixed_adjustments
+        self.moving_adjustments = moving_adjustments
+        self.animation_mode = animation_mode
+        self.scale_percent = scale_percent
+
+    def run(self) -> None:
+        try:
+            export_function = export_gif if self.export_kind == "GIF" else export_mp4
+            export_function(
+                self.result,
+                self.output_path,
+                self.delay_ms,
+                self.fixed_adjustments,
+                self.moving_adjustments,
+                self.animation_mode,
+                progress_callback=self.progress.emit,
+                scale_percent=self.scale_percent,
+            )
+        except Exception as exc:  # pragma: no cover - GUI boundary
+            self.failed.emit(str(exc))
+            return
+        self.finished.emit(self.export_kind, self.output_path)
 
 
 class ImagePreview(QFrame):
@@ -102,6 +148,9 @@ class MainWindow(QMainWindow):
         self.result: RegistrationResult | None = None
         self.wiggle_frames: list[QPixmap] = []
         self.wiggle_index = 0
+        self.is_exporting = False
+        self.export_thread: QThread | None = None
+        self.export_worker: ExportWorker | None = None
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._advance_wiggle)
@@ -122,6 +171,17 @@ class MainWindow(QMainWindow):
         open_moving.triggered.connect(self._choose_moving)
         exit_action = QAction("Exit", self)
         exit_action.triggered.connect(QApplication.quit)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self.is_exporting:
+            QMessageBox.information(
+                self,
+                "Export in progress",
+                "Wait for the current export to finish before closing.",
+            )
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -192,6 +252,26 @@ class MainWindow(QMainWindow):
         speed_layout.addWidget(self.speed_slider, 1)
         speed_layout.addWidget(self.speed_value_label)
 
+        scale_box = QWidget()
+        scale_layout = QHBoxLayout(scale_box)
+        scale_layout.setContentsMargins(0, 0, 0, 0)
+        scale_layout.setSpacing(8)
+        self.export_scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self.export_scale_slider.setRange(10, 100)
+        self.export_scale_slider.setSingleStep(5)
+        self.export_scale_slider.setPageStep(10)
+        self.export_scale_slider.setValue(100)
+        self.export_scale_value_label = self._make_value_label(
+            self._format_percent(100)
+        )
+        self.export_scale_slider.valueChanged.connect(
+            lambda value: self.export_scale_value_label.setText(
+                self._format_percent(value)
+            )
+        )
+        scale_layout.addWidget(self.export_scale_slider, 1)
+        scale_layout.addWidget(self.export_scale_value_label)
+
         self.fixed_brightness_slider, fixed_brightness_box = (
             self._make_adjustment_control(-100, 100, 0, "", self._adjustments_changed)
         )
@@ -215,14 +295,16 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(animation_box, 3, 1)
         controls_layout.addWidget(QLabel("Frame speed"), 4, 0)
         controls_layout.addWidget(speed_box, 4, 1)
-        controls_layout.addWidget(QLabel("First brightness"), 5, 0)
-        controls_layout.addWidget(fixed_brightness_box, 5, 1)
-        controls_layout.addWidget(QLabel("First contrast"), 6, 0)
-        controls_layout.addWidget(fixed_contrast_box, 6, 1)
-        controls_layout.addWidget(QLabel("Second brightness"), 7, 0)
-        controls_layout.addWidget(moving_brightness_box, 7, 1)
-        controls_layout.addWidget(QLabel("Second contrast"), 8, 0)
-        controls_layout.addWidget(moving_contrast_box, 8, 1)
+        controls_layout.addWidget(QLabel("Export size"), 5, 0)
+        controls_layout.addWidget(scale_box, 5, 1)
+        controls_layout.addWidget(QLabel("First brightness"), 6, 0)
+        controls_layout.addWidget(fixed_brightness_box, 6, 1)
+        controls_layout.addWidget(QLabel("First contrast"), 7, 0)
+        controls_layout.addWidget(fixed_contrast_box, 7, 1)
+        controls_layout.addWidget(QLabel("Second brightness"), 8, 0)
+        controls_layout.addWidget(moving_brightness_box, 8, 1)
+        controls_layout.addWidget(QLabel("Second contrast"), 9, 0)
+        controls_layout.addWidget(moving_contrast_box, 9, 1)
         controls_layout.addWidget(self.process_button, 0, 2)
         controls_layout.addWidget(self.export_gif_button, 1, 2)
         controls_layout.addWidget(self.export_mp4_button, 2, 2)
@@ -247,6 +329,13 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(root)
         self.setStatusBar(QStatusBar())
+        self.export_progress = QProgressBar()
+        self.export_progress.setRange(0, 100)
+        self.export_progress.setValue(0)
+        self.export_progress.setFixedWidth(220)
+        self.export_progress.setTextVisible(True)
+        self.export_progress.hide()
+        self.statusBar().addPermanentWidget(self.export_progress)
 
     def _apply_style(self) -> None:
         self.setStyleSheet(
@@ -339,6 +428,18 @@ class MainWindow(QMainWindow):
             QMenu::item:selected {
                 background: #4b5563;
             }
+            QProgressBar {
+                min-height: 18px;
+                color: #ffffff;
+                background: #2b2d31;
+                border: 1px solid #6b7280;
+                border-radius: 4px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background: #2563eb;
+                border-radius: 3px;
+            }
             """
         )
 
@@ -390,6 +491,9 @@ class MainWindow(QMainWindow):
 
     def _format_ms(self, value: int) -> str:
         return f"{value} ms"
+
+    def _format_percent(self, value: int) -> str:
+        return f"{value}%"
 
     def _choose_fixed(self) -> None:
         path = self._choose_image_file("Choose first image")
@@ -479,8 +583,8 @@ class MainWindow(QMainWindow):
     def _sync_export_state(self) -> None:
         has_result = self.result is not None
         self.auto_adjust_button.setEnabled(has_result)
-        self.export_gif_button.setEnabled(has_result)
-        self.export_mp4_button.setEnabled(has_result)
+        self.export_gif_button.setEnabled(has_result and not self.is_exporting)
+        self.export_mp4_button.setEnabled(has_result and not self.is_exporting)
 
     def _speed_changed(self, value: int) -> None:
         if self.timer.isActive():
@@ -488,6 +592,9 @@ class MainWindow(QMainWindow):
 
     def _wiggle_delay_ms(self) -> int:
         return self.speed_slider.value()
+
+    def _export_scale_percent(self) -> int:
+        return self.export_scale_slider.value()
 
     def _registration_method(self) -> str:
         return "SIFT" if self.sift_button.isChecked() else "ORB"
@@ -631,48 +738,83 @@ class MainWindow(QMainWindow):
         self.wiggle_preview.set_pixmap(self.wiggle_frames[self.wiggle_index])
 
     def _export_gif(self) -> None:
-        if self.result is None:
-            return
-        selected, _ = QFileDialog.getSaveFileName(
-            self, "Export wiggle GIF", "wiggle.gif", "GIF files (*.gif)"
+        self._export_animation(
+            "GIF",
+            "Export wiggle GIF",
+            "wiggle.gif",
+            "GIF files (*.gif)",
         )
-        if not selected:
-            return
-        try:
-            export_gif(
-                self.result,
-                selected,
-                self._wiggle_delay_ms(),
-                self._fixed_adjustments(),
-                self._moving_adjustments(),
-                self._animation_mode(),
-            )
-        except Exception as exc:  # pragma: no cover - GUI boundary
-            QMessageBox.critical(self, "Export failed", str(exc))
-            return
-        self.statusBar().showMessage(f"Saved GIF: {selected}", 7000)
 
     def _export_mp4(self) -> None:
+        self._export_animation(
+            "MP4",
+            "Export wiggle MP4",
+            "wiggle.mp4",
+            "MP4 files (*.mp4)",
+        )
+
+    def _export_animation(
+        self,
+        export_kind: str,
+        dialog_title: str,
+        default_name: str,
+        file_filter: str,
+    ) -> None:
         if self.result is None:
             return
         selected, _ = QFileDialog.getSaveFileName(
-            self, "Export wiggle MP4", "wiggle.mp4", "MP4 files (*.mp4)"
+            self, dialog_title, default_name, file_filter
         )
         if not selected:
             return
-        try:
-            export_mp4(
-                self.result,
-                selected,
-                self._wiggle_delay_ms(),
-                self._fixed_adjustments(),
-                self._moving_adjustments(),
-                self._animation_mode(),
-            )
-        except Exception as exc:  # pragma: no cover - GUI boundary
-            QMessageBox.critical(self, "Export failed", str(exc))
-            return
-        self.statusBar().showMessage(f"Saved MP4: {selected}", 7000)
+
+        self.is_exporting = True
+        self._sync_export_state()
+        self.export_progress.setValue(0)
+        self.export_progress.show()
+        self.statusBar().showMessage(f"Starting {export_kind} export...")
+
+        self.export_thread = QThread(self)
+        self.export_worker = ExportWorker(
+            export_kind,
+            selected,
+            self.result,
+            self._wiggle_delay_ms(),
+            self._fixed_adjustments(),
+            self._moving_adjustments(),
+            self._animation_mode(),
+            self._export_scale_percent(),
+        )
+        self.export_worker.moveToThread(self.export_thread)
+        self.export_thread.started.connect(self.export_worker.run)
+        self.export_worker.progress.connect(self._export_progress_changed)
+        self.export_worker.finished.connect(self._export_finished)
+        self.export_worker.failed.connect(self._export_failed)
+        self.export_worker.finished.connect(self.export_thread.quit)
+        self.export_worker.failed.connect(self.export_thread.quit)
+        self.export_thread.finished.connect(self.export_worker.deleteLater)
+        self.export_thread.finished.connect(self.export_thread.deleteLater)
+        self.export_thread.finished.connect(self._export_thread_finished)
+        self.export_thread.start()
+
+    def _export_progress_changed(self, value: int, message: str) -> None:
+        self.export_progress.setValue(max(0, min(100, value)))
+        self.statusBar().showMessage(message)
+
+    def _export_finished(self, export_kind: str, output_path: str) -> None:
+        self.export_progress.setValue(100)
+        self.statusBar().showMessage(f"Saved {export_kind}: {output_path}", 7000)
+
+    def _export_failed(self, message: str) -> None:
+        QMessageBox.critical(self, "Export failed", message)
+        self.statusBar().showMessage("Export failed", 5000)
+
+    def _export_thread_finished(self) -> None:
+        self.is_exporting = False
+        self.export_thread = None
+        self.export_worker = None
+        self.export_progress.hide()
+        self._sync_export_state()
 
 
 def _array_to_pixmap(image_bgr: np.ndarray) -> QPixmap:

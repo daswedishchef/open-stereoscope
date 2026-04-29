@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import cv2
 import imageio.v2 as imageio
 import numpy as np
 from PIL import Image
+
+
+ProgressCallback = Callable[[int, str], None]
 
 
 class RegistrationError(RuntimeError):
@@ -122,6 +126,7 @@ def build_animation_frames(
     fixed_adjustments: ImageAdjustments | None = None,
     moving_adjustments: ImageAdjustments | None = None,
     animation_mode: str = "wiggle",
+    progress_callback: ProgressCallback | None = None,
 ) -> list[np.ndarray]:
     normalized_mode = animation_mode.strip().lower()
     if normalized_mode == "smooth":
@@ -129,8 +134,14 @@ def build_animation_frames(
             result,
             fixed_adjustments,
             moving_adjustments,
+            progress_callback=progress_callback,
         )
-    return build_wiggle_frames(result, fixed_adjustments, moving_adjustments)
+    if progress_callback is not None:
+        progress_callback(25, "Preparing animation frames...")
+    frames = build_wiggle_frames(result, fixed_adjustments, moving_adjustments)
+    if progress_callback is not None:
+        progress_callback(60, "Animation frames ready")
+    return frames
 
 
 def build_smooth_interpolation_frames(
@@ -138,7 +149,10 @@ def build_smooth_interpolation_frames(
     fixed_adjustments: ImageAdjustments | None = None,
     moving_adjustments: ImageAdjustments | None = None,
     steps: int = 8,
+    progress_callback: ProgressCallback | None = None,
 ) -> list[np.ndarray]:
+    if progress_callback is not None:
+        progress_callback(5, "Applying image adjustments...")
     fixed_crop = apply_adjustments(
         result.fixed_crop,
         fixed_adjustments or ImageAdjustments(),
@@ -148,13 +162,18 @@ def build_smooth_interpolation_frames(
         moving_adjustments or ImageAdjustments(),
     )
 
+    if progress_callback is not None:
+        progress_callback(15, "Calculating smooth motion...")
     flow_forward = _dense_flow(fixed_crop, moving_crop)
+    if progress_callback is not None:
+        progress_callback(30, "Calculating return motion...")
     flow_backward = _dense_flow(moving_crop, fixed_crop)
 
     forward_values = np.linspace(0.0, 1.0, steps + 1)
     backward_values = np.linspace(1.0, 0.0, steps + 1)[1:-1]
+    values = np.concatenate([forward_values, backward_values])
     frames = []
-    for amount in np.concatenate([forward_values, backward_values]):
+    for index, amount in enumerate(values, start=1):
         frame = _interpolate_with_flow(
             fixed_crop,
             moving_crop,
@@ -163,6 +182,9 @@ def build_smooth_interpolation_frames(
             float(amount),
         )
         frames.append(_bgr_to_rgb(frame))
+        if progress_callback is not None:
+            progress = 30 + int(index / len(values) * 30)
+            progress_callback(progress, "Building smooth frames...")
     return frames
 
 
@@ -210,14 +232,27 @@ def export_gif(
     fixed_adjustments: ImageAdjustments | None = None,
     moving_adjustments: ImageAdjustments | None = None,
     animation_mode: str = "wiggle",
+    progress_callback: ProgressCallback | None = None,
+    scale_percent: int = 100,
 ) -> None:
-    frames = build_animation_frames(
-        result,
-        fixed_adjustments,
-        moving_adjustments,
-        animation_mode,
+    if progress_callback is not None:
+        progress_callback(0, "Starting GIF export...")
+    frames = _scale_frames(
+        build_animation_frames(
+            result,
+            fixed_adjustments,
+            moving_adjustments,
+            animation_mode,
+            progress_callback,
+        ),
+        scale_percent,
+        progress_callback,
     )
+    if progress_callback is not None:
+        progress_callback(70, "Converting GIF frames...")
     pil_frames = [Image.fromarray(frame) for frame in frames]
+    if progress_callback is not None:
+        progress_callback(85, "Saving GIF...")
     pil_frames[0].save(
         str(output_path),
         save_all=True,
@@ -226,6 +261,8 @@ def export_gif(
         loop=0,
         disposal=2,
     )
+    if progress_callback is not None:
+        progress_callback(100, "GIF saved")
 
 
 def export_mp4(
@@ -235,21 +272,38 @@ def export_mp4(
     fixed_adjustments: ImageAdjustments | None = None,
     moving_adjustments: ImageAdjustments | None = None,
     animation_mode: str = "wiggle",
+    progress_callback: ProgressCallback | None = None,
+    scale_percent: int = 100,
 ) -> None:
+    if progress_callback is not None:
+        progress_callback(0, "Starting MP4 export...")
     frames = _make_even_sized(
-        build_animation_frames(
-            result,
-            fixed_adjustments,
-            moving_adjustments,
-            animation_mode,
+        _scale_frames(
+            build_animation_frames(
+                result,
+                fixed_adjustments,
+                moving_adjustments,
+                animation_mode,
+                progress_callback,
+            ),
+            scale_percent,
+            progress_callback,
         )
     )
     fps = max(1.0, 1000.0 / float(delay_ms))
     with imageio.get_writer(str(output_path), fps=fps, codec="libx264", quality=8) as writer:
         cycle_count = 8 if animation_mode.strip().lower() == "wiggle" else 4
+        total_frames = cycle_count * len(frames)
+        written_frames = 0
         for _ in range(cycle_count):
             for frame in frames:
                 writer.append_data(frame)
+                written_frames += 1
+                if progress_callback is not None:
+                    progress = 60 + int(written_frames / total_frames * 38)
+                    progress_callback(progress, "Writing MP4 frames...")
+    if progress_callback is not None:
+        progress_callback(100, "MP4 saved")
 
 
 def _estimate_transform(
@@ -628,6 +682,30 @@ def _make_even_sized(frames: list[np.ndarray]) -> list[np.ndarray]:
     even_height = height - (height % 2)
     even_width = width - (width % 2)
     return [frame[:even_height, :even_width].copy() for frame in frames]
+
+
+def _scale_frames(
+    frames: list[np.ndarray],
+    scale_percent: int,
+    progress_callback: ProgressCallback | None = None,
+) -> list[np.ndarray]:
+    scale = float(np.clip(scale_percent, 1, 100)) / 100.0
+    if scale >= 1.0:
+        return frames
+
+    if progress_callback is not None:
+        progress_callback(65, "Scaling export frames...")
+    height, width = frames[0].shape[:2]
+    scaled_width = max(1, int(round(width * scale)))
+    scaled_height = max(1, int(round(height * scale)))
+    return [
+        cv2.resize(
+            frame,
+            (scaled_width, scaled_height),
+            interpolation=cv2.INTER_AREA,
+        )
+        for frame in frames
+    ]
 
 
 def _dense_flow(first: np.ndarray, second: np.ndarray) -> np.ndarray:
