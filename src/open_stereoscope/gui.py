@@ -29,7 +29,7 @@ from .processing import (
     RegistrationError,
     RegistrationResult,
     apply_adjustments,
-    build_wiggle_frames,
+    build_animation_frames,
     estimate_adjustments_to_match,
     export_gif,
     export_mp4,
@@ -105,6 +105,10 @@ class MainWindow(QMainWindow):
 
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._advance_wiggle)
+        self.preview_refresh_timer = QTimer(self)
+        self.preview_refresh_timer.setSingleShot(True)
+        self.preview_refresh_timer.timeout.connect(self._refresh_result_previews)
+        self.adjustment_drag_depth = 0
 
         self._build_actions()
         self._build_ui()
@@ -164,6 +168,19 @@ class MainWindow(QMainWindow):
         self.orb_button.setChecked(True)
         detector_layout.addStretch(1)
 
+        animation_box = QWidget()
+        animation_layout = QHBoxLayout(animation_box)
+        animation_layout.setContentsMargins(0, 0, 0, 0)
+        animation_layout.setSpacing(8)
+        self.wiggle_button = QPushButton("Wiggle")
+        self.smooth_button = QPushButton("Smooth")
+        for button in (self.wiggle_button, self.smooth_button):
+            button.setCheckable(True)
+            button.clicked.connect(self._animation_mode_changed)
+            animation_layout.addWidget(button)
+        self.wiggle_button.setChecked(True)
+        animation_layout.addStretch(1)
+
         speed_box = QWidget()
         speed_layout = QHBoxLayout(speed_box)
         speed_layout.setContentsMargins(0, 0, 0, 0)
@@ -200,16 +217,18 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.moving_label, 1, 1)
         controls_layout.addWidget(QLabel("Registration"), 2, 0)
         controls_layout.addWidget(detector_box, 2, 1)
-        controls_layout.addWidget(QLabel("Wiggle speed"), 3, 0)
-        controls_layout.addWidget(speed_box, 3, 1)
-        controls_layout.addWidget(QLabel("First brightness"), 4, 0)
-        controls_layout.addWidget(fixed_brightness_box, 4, 1)
-        controls_layout.addWidget(QLabel("First contrast"), 5, 0)
-        controls_layout.addWidget(fixed_contrast_box, 5, 1)
-        controls_layout.addWidget(QLabel("Second brightness"), 6, 0)
-        controls_layout.addWidget(moving_brightness_box, 6, 1)
-        controls_layout.addWidget(QLabel("Second contrast"), 7, 0)
-        controls_layout.addWidget(moving_contrast_box, 7, 1)
+        controls_layout.addWidget(QLabel("Animation"), 3, 0)
+        controls_layout.addWidget(animation_box, 3, 1)
+        controls_layout.addWidget(QLabel("Frame speed"), 4, 0)
+        controls_layout.addWidget(speed_box, 4, 1)
+        controls_layout.addWidget(QLabel("First brightness"), 5, 0)
+        controls_layout.addWidget(fixed_brightness_box, 5, 1)
+        controls_layout.addWidget(QLabel("First contrast"), 6, 0)
+        controls_layout.addWidget(fixed_contrast_box, 6, 1)
+        controls_layout.addWidget(QLabel("Second brightness"), 7, 0)
+        controls_layout.addWidget(moving_brightness_box, 7, 1)
+        controls_layout.addWidget(QLabel("Second contrast"), 8, 0)
+        controls_layout.addWidget(moving_contrast_box, 8, 1)
         controls_layout.addWidget(self.process_button, 0, 2)
         controls_layout.addWidget(self.export_gif_button, 1, 2)
         controls_layout.addWidget(self.export_mp4_button, 2, 2)
@@ -365,6 +384,8 @@ class MainWindow(QMainWindow):
             lambda current: value_label.setText(self._format_value(current, suffix))
         )
         slider.valueChanged.connect(callback)
+        slider.sliderPressed.connect(self._begin_adjustment_interaction)
+        slider.sliderReleased.connect(self._end_adjustment_interaction)
 
         layout.addWidget(slider, 1)
         layout.addWidget(value_label)
@@ -452,6 +473,8 @@ class MainWindow(QMainWindow):
     def _clear_result(self) -> None:
         self.result = None
         self.timer.stop()
+        self.preview_refresh_timer.stop()
+        self.adjustment_drag_depth = 0
         self.wiggle_frames = []
         self.first_preview.set_pixmap(None)
         self.second_preview.set_pixmap(None)
@@ -485,6 +508,23 @@ class MainWindow(QMainWindow):
             self.sift_button.setChecked(False)
         self._clear_result()
 
+    def _animation_mode(self) -> str:
+        return "smooth" if self.smooth_button.isChecked() else "wiggle"
+
+    def _animation_mode_changed(self, _checked: bool = False) -> None:
+        sender = self.sender()
+        if sender is self.smooth_button:
+            self.wiggle_button.setChecked(False)
+            self.smooth_button.setChecked(True)
+            self.wiggle_preview.title_label.setText("Smooth preview")
+        else:
+            self.wiggle_button.setChecked(True)
+            self.smooth_button.setChecked(False)
+            self.wiggle_preview.title_label.setText("Wiggle preview")
+
+        if self.result is not None:
+            self._refresh_result_previews()
+
     def _confidence_label(self, confidence: float) -> str:
         if confidence >= 0.65:
             return "high"
@@ -493,8 +533,27 @@ class MainWindow(QMainWindow):
         return "low"
 
     def _adjustments_changed(self, _value: int) -> None:
-        if self.result is not None:
-            self._refresh_result_previews()
+        if self.result is None:
+            return
+        self._show_adjusted_still_previews()
+        if self.adjustment_drag_depth > 0:
+            return
+        self._schedule_preview_refresh()
+
+    def _begin_adjustment_interaction(self) -> None:
+        self.adjustment_drag_depth += 1
+        self.preview_refresh_timer.stop()
+        if self.timer.isActive():
+            self.timer.stop()
+        self.statusBar().showMessage("Preview paused while adjusting", 2000)
+
+    def _end_adjustment_interaction(self) -> None:
+        self.adjustment_drag_depth = max(0, self.adjustment_drag_depth - 1)
+        if self.result is not None and self.adjustment_drag_depth == 0:
+            self._schedule_preview_refresh(delay_ms=50)
+
+    def _schedule_preview_refresh(self, delay_ms: int = 250) -> None:
+        self.preview_refresh_timer.start(delay_ms)
 
     def _auto_adjust(self) -> None:
         if self.result is None:
@@ -532,6 +591,34 @@ class MainWindow(QMainWindow):
         if self.result is None:
             return
 
+        self.preview_refresh_timer.stop()
+        if self.adjustment_drag_depth > 0:
+            return
+
+        self.statusBar().showMessage("Updating preview...", 2000)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._show_adjusted_still_previews()
+            self.wiggle_frames = [
+                _rgb_array_to_pixmap(frame)
+                for frame in build_animation_frames(
+                    self.result,
+                    self._fixed_adjustments(),
+                    self._moving_adjustments(),
+                    self._animation_mode(),
+                )
+            ]
+            self.wiggle_index %= len(self.wiggle_frames)
+            self.wiggle_preview.set_pixmap(self.wiggle_frames[self.wiggle_index])
+            self.timer.start(self._wiggle_delay_ms())
+            self.statusBar().showMessage("Preview updated", 2000)
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _show_adjusted_still_previews(self) -> None:
+        if self.result is None:
+            return
+
         adjusted_fixed = apply_adjustments(
             self.result.fixed_crop,
             self._fixed_adjustments(),
@@ -542,16 +629,6 @@ class MainWindow(QMainWindow):
         )
         self.first_preview.set_pixmap(_array_to_pixmap(adjusted_fixed))
         self.second_preview.set_pixmap(_array_to_pixmap(adjusted_moving))
-        self.wiggle_frames = [
-            _rgb_array_to_pixmap(frame)
-            for frame in build_wiggle_frames(
-                self.result,
-                self._fixed_adjustments(),
-                self._moving_adjustments(),
-            )
-        ]
-        self.wiggle_index %= len(self.wiggle_frames)
-        self.wiggle_preview.set_pixmap(self.wiggle_frames[self.wiggle_index])
 
     def _advance_wiggle(self) -> None:
         if not self.wiggle_frames:
@@ -574,6 +651,7 @@ class MainWindow(QMainWindow):
                 self._wiggle_delay_ms(),
                 self._fixed_adjustments(),
                 self._moving_adjustments(),
+                self._animation_mode(),
             )
         except Exception as exc:  # pragma: no cover - GUI boundary
             QMessageBox.critical(self, "Export failed", str(exc))
@@ -595,6 +673,7 @@ class MainWindow(QMainWindow):
                 self._wiggle_delay_ms(),
                 self._fixed_adjustments(),
                 self._moving_adjustments(),
+                self._animation_mode(),
             )
         except Exception as exc:  # pragma: no cover - GUI boundary
             QMessageBox.critical(self, "Export failed", str(exc))

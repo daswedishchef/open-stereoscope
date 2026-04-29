@@ -10,8 +10,9 @@ The app lets a user:
 - choose ORB or SIFT feature registration;
 - ignore black scan borders while registering and cropping;
 - crop both images to the detected overlap;
-- preview the two cropped frames and the animated wiggle;
-- choose the wiggle speed;
+- preview the two cropped frames and the animated wiggle or smooth transition;
+- choose the animation frame speed;
+- toggle between two-frame wiggle animation and smooth interpolation;
 - adjust brightness and contrast independently for each cropped frame;
 - auto-adjust the second cropped frame to match the first frame's brightness
   and contrast;
@@ -78,3 +79,7 @@ frame independently. This helps when stereo images were captured with slightly
 different exposure, lighting, or scan contrast. The Auto Adjust button uses
 the cropped overlap to set the second frame's brightness and contrast toward
 the first frame.
+
+Smooth mode uses feature-based dense optical-flow interpolation between the
+registered crops. It generates intermediate frames in both directions so the
+GIF or MP4 moves smoothly from one perspective to the other and back.

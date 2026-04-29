@@ -117,6 +117,55 @@ def build_wiggle_frames(
     ]
 
 
+def build_animation_frames(
+    result: RegistrationResult,
+    fixed_adjustments: ImageAdjustments | None = None,
+    moving_adjustments: ImageAdjustments | None = None,
+    animation_mode: str = "wiggle",
+) -> list[np.ndarray]:
+    normalized_mode = animation_mode.strip().lower()
+    if normalized_mode == "smooth":
+        return build_smooth_interpolation_frames(
+            result,
+            fixed_adjustments,
+            moving_adjustments,
+        )
+    return build_wiggle_frames(result, fixed_adjustments, moving_adjustments)
+
+
+def build_smooth_interpolation_frames(
+    result: RegistrationResult,
+    fixed_adjustments: ImageAdjustments | None = None,
+    moving_adjustments: ImageAdjustments | None = None,
+    steps: int = 8,
+) -> list[np.ndarray]:
+    fixed_crop = apply_adjustments(
+        result.fixed_crop,
+        fixed_adjustments or ImageAdjustments(),
+    )
+    moving_crop = apply_adjustments(
+        result.moving_crop,
+        moving_adjustments or ImageAdjustments(),
+    )
+
+    flow_forward = _dense_flow(fixed_crop, moving_crop)
+    flow_backward = _dense_flow(moving_crop, fixed_crop)
+
+    forward_values = np.linspace(0.0, 1.0, steps + 1)
+    backward_values = np.linspace(1.0, 0.0, steps + 1)[1:-1]
+    frames = []
+    for amount in np.concatenate([forward_values, backward_values]):
+        frame = _interpolate_with_flow(
+            fixed_crop,
+            moving_crop,
+            flow_forward,
+            flow_backward,
+            float(amount),
+        )
+        frames.append(_bgr_to_rgb(frame))
+    return frames
+
+
 def apply_adjustments(image: np.ndarray, adjustments: ImageAdjustments) -> np.ndarray:
     contrast = float(np.clip(adjustments.contrast, 0.0, 3.0))
     brightness = int(np.clip(adjustments.brightness, -255, 255))
@@ -160,8 +209,14 @@ def export_gif(
     delay_ms: int,
     fixed_adjustments: ImageAdjustments | None = None,
     moving_adjustments: ImageAdjustments | None = None,
+    animation_mode: str = "wiggle",
 ) -> None:
-    frames = build_wiggle_frames(result, fixed_adjustments, moving_adjustments)
+    frames = build_animation_frames(
+        result,
+        fixed_adjustments,
+        moving_adjustments,
+        animation_mode,
+    )
     pil_frames = [Image.fromarray(frame) for frame in frames]
     pil_frames[0].save(
         str(output_path),
@@ -179,13 +234,20 @@ def export_mp4(
     delay_ms: int,
     fixed_adjustments: ImageAdjustments | None = None,
     moving_adjustments: ImageAdjustments | None = None,
+    animation_mode: str = "wiggle",
 ) -> None:
     frames = _make_even_sized(
-        build_wiggle_frames(result, fixed_adjustments, moving_adjustments)
+        build_animation_frames(
+            result,
+            fixed_adjustments,
+            moving_adjustments,
+            animation_mode,
+        )
     )
     fps = max(1.0, 1000.0 / float(delay_ms))
     with imageio.get_writer(str(output_path), fps=fps, codec="libx264", quality=8) as writer:
-        for _ in range(8):
+        cycle_count = 8 if animation_mode.strip().lower() == "wiggle" else 4
+        for _ in range(cycle_count):
             for frame in frames:
                 writer.append_data(frame)
 
@@ -566,6 +628,78 @@ def _make_even_sized(frames: list[np.ndarray]) -> list[np.ndarray]:
     even_height = height - (height % 2)
     even_width = width - (width % 2)
     return [frame[:even_height, :even_width].copy() for frame in frames]
+
+
+def _dense_flow(first: np.ndarray, second: np.ndarray) -> np.ndarray:
+    first_gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
+    second_gray = cv2.cvtColor(second, cv2.COLOR_BGR2GRAY)
+
+    height, width = first_gray.shape
+    max_dimension = max(height, width)
+    scale = min(1.0, 1200.0 / float(max_dimension))
+    if scale < 1.0:
+        flow_size = (max(1, int(width * scale)), max(1, int(height * scale)))
+        first_flow = cv2.resize(first_gray, flow_size, interpolation=cv2.INTER_AREA)
+        second_flow = cv2.resize(second_gray, flow_size, interpolation=cv2.INTER_AREA)
+    else:
+        first_flow = first_gray
+        second_flow = second_gray
+
+    flow = cv2.calcOpticalFlowFarneback(
+        first_flow,
+        second_flow,
+        None,
+        pyr_scale=0.5,
+        levels=4,
+        winsize=35,
+        iterations=4,
+        poly_n=7,
+        poly_sigma=1.5,
+        flags=cv2.OPTFLOW_FARNEBACK_GAUSSIAN,
+    )
+
+    if scale < 1.0:
+        small_height, small_width = first_flow.shape
+        flow = cv2.resize(flow, (width, height), interpolation=cv2.INTER_LINEAR)
+        flow[:, :, 0] *= width / float(small_width)
+        flow[:, :, 1] *= height / float(small_height)
+    return flow.astype(np.float32)
+
+
+def _interpolate_with_flow(
+    first: np.ndarray,
+    second: np.ndarray,
+    flow_forward: np.ndarray,
+    flow_backward: np.ndarray,
+    amount: float,
+) -> np.ndarray:
+    amount = float(np.clip(amount, 0.0, 1.0))
+    height, width = first.shape[:2]
+    grid_x, grid_y = np.meshgrid(
+        np.arange(width, dtype=np.float32),
+        np.arange(height, dtype=np.float32),
+    )
+
+    first_map_x = grid_x - flow_forward[:, :, 0] * amount
+    first_map_y = grid_y - flow_forward[:, :, 1] * amount
+    second_map_x = grid_x - flow_backward[:, :, 0] * (1.0 - amount)
+    second_map_y = grid_y - flow_backward[:, :, 1] * (1.0 - amount)
+
+    first_warped = cv2.remap(
+        first,
+        first_map_x,
+        first_map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT101,
+    )
+    second_warped = cv2.remap(
+        second,
+        second_map_x,
+        second_map_y,
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_REFLECT101,
+    )
+    return cv2.addWeighted(first_warped, 1.0 - amount, second_warped, amount, 0.0)
 
 
 def _longest_true_run(values: np.ndarray) -> tuple[int, int] | None:
