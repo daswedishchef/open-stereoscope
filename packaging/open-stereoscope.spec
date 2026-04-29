@@ -1,10 +1,14 @@
 # Run from the repository root:
 #   pyinstaller packaging/open-stereoscope.spec
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_submodules
 
 
 block_cipher = None
+project_root = Path(SPECPATH).parent
+src_root = project_root / "src"
 
 hiddenimports = (
     collect_submodules("cv2")
@@ -14,10 +18,15 @@ hiddenimports = (
 )
 
 a = Analysis(
-    ["scripts/run_open_stereoscope.py"],
-    pathex=["src"],
+    [str(project_root / "scripts" / "run_open_stereoscope.py")],
+    pathex=[str(src_root)],
     binaries=[],
-    datas=[("src/open_stereoscope/assets/open-stereo.png", "open_stereoscope/assets")],
+    datas=[
+        (
+            str(src_root / "open_stereoscope" / "assets" / "open-stereo.png"),
+            "open_stereoscope/assets",
+        )
+    ],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -46,7 +55,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon="src/open_stereoscope/assets/open-stereo.ico",
+    icon=str(src_root / "open_stereoscope" / "assets" / "open-stereo.ico"),
 )
 
 coll = COLLECT(
